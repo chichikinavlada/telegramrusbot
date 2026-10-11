@@ -1,36 +1,32 @@
-from __future__ import annotations
+"""Запуск бота."""
 
 import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
 
-from src.bot.handlers import setup_handlers
-from src.config import Nastroyki
-from src.services.analyzer import AnalizatorTeksta
-from src.services.database import BazaDannyh
+from src.bot.handlers import router
+from src.config import BOT_TOKEN
+from src.services.database import create_table
 
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
 
-    settings = Nastroyki.iz_konfiga()
-    database = BazaDannyh(settings.db_path)
-    database.initialize()
-    analyzer = AnalizatorTeksta()
+    if not BOT_TOKEN:
+        print('Не найден токен. Задай переменную окружения BOT_TOKEN.')
+        return
 
-    bot = Bot(
-        token=settings.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
+    create_table()
+
+    bot = Bot(token=BOT_TOKEN)
     dispatcher = Dispatcher()
-    dispatcher.include_router(setup_handlers(database, analyzer))
+    dispatcher.include_router(router)
 
     await bot.delete_webhook(drop_pending_updates=True)
     await dispatcher.start_polling(bot)
 
 
 def run() -> None:
+    """Запускает бота (вызывается из main.py)."""
     asyncio.run(main())

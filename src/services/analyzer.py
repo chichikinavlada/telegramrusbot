@@ -1,113 +1,97 @@
-from __future__ import annotations
+"""Анализ русского учебного текста: слова, предложения, леммы и именованные сущности."""
 
-import re
-from collections import Counter
-from dataclasses import dataclass
-from typing import Iterable
-
+import nltk
+import pandas as pd
+from nltk.corpus import stopwords
+from nltk.tokenize import sent_tokenize, wordpunct_tokenize
 from natasha import Doc, MorphVocab, NewsEmbedding, NewsNERTagger, Segmenter
 from pymorphy3 import MorphAnalyzer
 
-STOPWORDS = {
-    "а", "без", "более", "бы", "был", "была", "были", "было", "быть", "в", "вам", "вас", "весь",
-    "во", "вот", "все", "всего", "вы", "где", "да", "даже", "для", "до", "его", "ее", "если",
-    "есть", "еще", "же", "за", "здесь", "и", "из", "или", "им", "их", "к", "как", "ко", "когда",
-    "кто", "ли", "либо", "мне", "может", "мы", "на", "над", "надо", "наш", "не", "него", "нее",
-    "нет", "ни", "них", "но", "ну", "о", "об", "однако", "он", "она", "они", "оно", "от", "по",
-    "под", "при", "с", "со", "так", "также", "такой", "там", "те", "тем", "то", "того", "тоже",
-    "той", "только", "том", "ты", "у", "уж", "уже", "хотя", "чего", "чей", "чем", "что", "чтобы",
-    "эта", "эти", "это", "я",
-}
+# данные для nltk (если они уже скачаны, повторно ничего не скачается)
+nltk.download('punkt_tab', quiet=True)
+nltk.download('stopwords', quiet=True)
 
-TOKEN_RE = re.compile(r"[А-Яа-яЁёA-Za-z-]+")
+# модели загружаем один раз при запуске бота, потому что это долго
+morph = MorphAnalyzer()
+segmenter = Segmenter()
+morph_vocab = MorphVocab()
+emb = NewsEmbedding()
+ner_tagger = NewsNERTagger(emb)
 
-ENTITY_LABELS = {
-    "PER": "люди",
-    "LOC": "места",
-    "ORG": "организации",
-    "DATE": "даты",
-}
+# стоп-слова: список из nltk и слова, которые добавляли на семинаре по визуализации
+# (плюс "являться", которое часто встречается в учебных текстах)
+stops = set(stopwords.words('russian') + ['это', 'весь', 'который', 'мочь', 'свой', 'являться'])
 
+# уже разобранные слова, чтобы не вызывать pymorphy много раз для одного слова
+known_words = {}
 
-@dataclass(slots=True)
-class Sushchnost:
-    label: str
-    value: str
+# типы сущностей в natasha и их названия для пользователя
+ENTITY_NAMES = {'PER': 'люди', 'LOC': 'места', 'ORG': 'организации'}
 
 
-@dataclass(slots=True)
-class RezultatAnaliza:
-    source_text: str
-    word_count: int
-    sentence_count: int
-    top_lemmas: list[tuple[str, int]]
-    entities: list[Sushchnost]
-
-    @property
-    def entity_counts(self) -> dict[str, int]:
-        counts = Counter(entity.label for entity in self.entities)
-        return {label: counts.get(label, 0) for label in ENTITY_LABELS.values() if counts.get(label, 0) > 0}
+def get_words(text: str) -> list:
+    """Делит текст на слова: оставляет только токены из букв и приводит их к нижнему регистру."""
+    words = []
+    for token in wordpunct_tokenize(text):
+        if token.isalpha():
+            words.append(token.lower())
+    return words
 
 
-class AnalizatorTeksta:
-    def __init__(self) -> None:
-        self.morph = MorphAnalyzer()
-        self.segmenter = Segmenter()
-        self.morph_vocab = MorphVocab()
-        self.embedding = NewsEmbedding()
-        self.ner_tagger = NewsNERTagger(self.embedding)
+def get_lemmas(words: list) -> list:
+    """Лемматизирует слова через pymorphy3 и убирает стоп-слова и очень короткие леммы."""
+    lemmas = []
+    for word in words:
+        if word in known_words:
+            lemma = known_words[word]
+        else:
+            lemma = morph.parse(word)[0].normal_form
+            known_words[word] = lemma
+        if lemma not in stops and len(lemma) > 2:
+            lemmas.append(lemma)
+    return lemmas
 
-    def analiz(self, text: str) -> RezultatAnaliza:
-        chistyy_tekst = self._normalize_whitespace(text)
-        tokeny = self._tokenize(chistyy_tekst)
-        lemmmy = self._lemmatize(tokeny)
-        top_lemmy = Counter(lemmmy).most_common(10)
-        sushchnosti = self._extract_entities(chistyy_tekst)
-        kolvo_predlozheniy = self._count_sentences(chistyy_tekst)
 
-        return RezultatAnaliza(
-            source_text=chistyy_tekst,
-            word_count=len(tokeny),
-            sentence_count=kolvo_predlozheniy,
-            top_lemmas=top_lemmy,
-            entities=sushchnosti,
-        )
+def count_sentences(text: str) -> int:
+    """Считает предложения с помощью sent_tokenize из nltk."""
+    return len(sent_tokenize(text, language='russian'))
 
-    def _normalize_whitespace(self, text: str) -> str:
-        return re.sub(r"\s+", " ", text).strip()
 
-    def _tokenize(self, text: str) -> list[str]:
-        return [token.lower() for token in TOKEN_RE.findall(text)]
+def find_entities(text: str) -> dict:
+    """Ищет людей, места и организации через natasha. Возвращает словарь {тип: [сущности]}."""
+    doc = Doc(text)
+    doc.segment(segmenter)
+    doc.tag_ner(ner_tagger)
 
-    def _lemmatize(self, tokens: Iterable[str]) -> list[str]:
-        lemmas: list[str] = []
-        for token in tokens:
-            if len(token) < 3 or token in STOPWORDS:
-                continue
-            parsed = self.morph.parse(token)[0]
-            lemma = parsed.normal_form
-            if lemma not in STOPWORDS and len(lemma) >= 3:
-                lemmas.append(lemma)
-        return lemmas
+    entities = {}
+    for span in doc.spans:
+        if span.type not in ENTITY_NAMES:
+            continue
+        span.normalize(morph_vocab)
+        name = ENTITY_NAMES[span.type]
+        value = span.normal or span.text
+        if name not in entities:
+            entities[name] = []
+        if value not in entities[name]:
+            entities[name].append(value)
+    return entities
 
-    def _extract_entities(self, text: str) -> list[Sushchnost]:
-        doc = Doc(text)
-        doc.segment(self.segmenter)
-        doc.tag_ner(self.ner_tagger)
 
-        items: list[Sushchnost] = []
-        seen: set[tuple[str, str]] = set()
-        for span in doc.spans:
-            span.normalize(self.morph_vocab)
-            label = ENTITY_LABELS.get(span.type)
-            value = (span.normal or span.text).strip()
-            key = (label or "", value.lower())
-            if not label or not value or key in seen:
-                continue
-            seen.add(key)
-            items.append(Sushchnost(label=label, value=value))
-        return items[:12]
+def analyze_text(text: str) -> dict:
+    """Главная функция: принимает текст и возвращает словарь с результатами анализа."""
+    text = text.strip()
+    words = get_words(text)
+    lemmas = get_lemmas(words)
 
-    def _count_sentences(self, text: str) -> int:
-        parts = [part for part in re.split(r"[.!?]+", text) if part.strip()]
-        return len(parts)
+    # таблица частотности лемм, как в домашке по морфологии
+    freq = pd.Series(lemmas, dtype='object').value_counts()
+    top_lemmas = []
+    for lemma, count in freq.head(10).items():
+        top_lemmas.append((lemma, int(count)))
+
+    return {
+        'word_count': len(words),
+        'sentence_count': count_sentences(text),
+        'top_lemmas': top_lemmas,
+        'entities': find_entities(text),
+    }

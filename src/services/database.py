@@ -1,113 +1,73 @@
-from __future__ import annotations
+"""Работа с базой данных SQLite: сохраняем историю анализов."""
 
-import json
+import os
 import sqlite3
-from dataclasses import asdict
-from pathlib import Path
-from typing import Any
 
-from src.services.analyzer import RezultatAnaliza, Sushchnost
+from src.config import DB_PATH
 
 
-class BazaDannyh:
-    def __init__(self, db_path: Path) -> None:
-        self.db_path = db_path
+def create_table() -> None:
+    """Создаёт таблицу text_analyses, если её ещё нет."""
+    os.makedirs('data', exist_ok=True)
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS text_analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            word_count INTEGER,
+            sentence_count INTEGER,
+            top_lemmas TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    con.commit()
+    con.close()
 
-    def initialize(self) -> None:
-        with sqlite3.connect(self.db_path) as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS analyses (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    username TEXT,
-                    source_text TEXT NOT NULL,
-                    word_count INTEGER NOT NULL,
-                    sentence_count INTEGER NOT NULL,
-                    top_lemmas_json TEXT NOT NULL,
-                    entities_json TEXT NOT NULL,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            connection.commit()
 
-    def save_analysis(self, user_id: int, username: str | None, result: RezultatAnaliza) -> int:
-        top_lemmas_json = json.dumps(result.top_lemmas, ensure_ascii=False)
-        entities_json = json.dumps([asdict(entity) for entity in result.entities], ensure_ascii=False)
+def save_analysis(user_id: int, result: dict) -> None:
+    """Сохраняет результат анализа. Леммы записываем в одну строку через запятую."""
+    lemmas = []
+    for lemma, count in result['top_lemmas']:
+        lemmas.append(lemma)
+    lemmas_text = ', '.join(lemmas)
 
-        with sqlite3.connect(self.db_path) as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO analyses (
-                    user_id,
-                    username,
-                    source_text,
-                    word_count,
-                    sentence_count,
-                    top_lemmas_json,
-                    entities_json
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    user_id,
-                    username,
-                    result.source_text,
-                    result.word_count,
-                    result.sentence_count,
-                    top_lemmas_json,
-                    entities_json,
-                ),
-            )
-            connection.commit()
-            return int(cursor.lastrowid)
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute(
+        'INSERT INTO text_analyses (user_id, word_count, sentence_count, top_lemmas) VALUES (?, ?, ?, ?)',
+        (user_id, result['word_count'], result['sentence_count'], lemmas_text),
+    )
+    con.commit()
+    con.close()
 
-    def get_recent_analyses(self, user_id: int, limit: int = 5) -> list[dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as connection:
-            connection.row_factory = sqlite3.Row
-            rows = connection.execute(
-                """
-                SELECT created_at, word_count, sentence_count, top_lemmas_json
-                FROM analyses
-                WHERE user_id = ?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (user_id, limit),
-            ).fetchall()
 
-        result: list[dict[str, Any]] = []
-        for row in rows:
-            top_lemmas = json.loads(row["top_lemmas_json"])
-            result.append(
-                {
-                    "created_at": row["created_at"],
-                    "word_count": row["word_count"],
-                    "sentence_count": row["sentence_count"],
-                    "top_lemmas": top_lemmas,
-                }
-            )
-        return result
+def get_recent_analyses(user_id: int, limit: int = 5) -> list:
+    """Возвращает последние анализы пользователя (сначала самые новые)."""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute(
+        'SELECT created_at, word_count, sentence_count, top_lemmas '
+        'FROM text_analyses WHERE user_id = ? ORDER BY id DESC LIMIT ?',
+        (user_id, limit),
+    )
+    rows = cur.fetchall()
+    con.close()
+    return rows
 
-    def get_user_stats(self, user_id: int) -> dict[str, int | float]:
-        with sqlite3.connect(self.db_path) as connection:
-            row = connection.execute(
-                """
-                SELECT COUNT(*) AS total_analyses, COALESCE(AVG(word_count), 0) AS avg_word_count
-                FROM analyses
-                WHERE user_id = ?
-                """,
-                (user_id,),
-            ).fetchone()
 
-        total_analyses = int(row[0]) if row else 0
-        avg_word_count = round(float(row[1]), 1) if row else 0.0
-        return {
-            "total_analyses": total_analyses,
-            "avg_word_count": avg_word_count,
-        }
+def get_user_stats(user_id: int) -> tuple:
+    """Возвращает количество анализов пользователя и среднее число слов в тексте."""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute(
+        'SELECT COUNT(id), AVG(word_count) FROM text_analyses WHERE user_id = ?',
+        (user_id,),
+    )
+    total, average = cur.fetchone()
+    con.close()
 
-    def parse_entities(self, raw_json: str) -> list[Sushchnost]:
-        payload = json.loads(raw_json)
-        return [Sushchnost(**item) for item in payload]
+    # если анализов ещё не было, AVG вернёт None
+    if average is None:
+        average = 0
+    return total, round(average, 1)

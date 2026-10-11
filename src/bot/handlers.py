@@ -1,169 +1,150 @@
-from __future__ import annotations
+"""Обработчики сообщений и кнопок бота."""
+
+import os
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.filters import CommandStart
+from aiogram.types import CallbackQuery, FSInputFile, Message
 
-from src.bot.keyboards import glavnoe_menu, knopka_nazad, knopki_posle_analiza, knopki_posle_razdela
-from src.services.analyzer import AnalizatorTeksta, RezultatAnaliza
-from src.services.charts import postroit_grafik
-from src.services.database import BazaDannyh
+from src.bot.keyboards import after_analysis_buttons, after_section_buttons, back_button, main_menu
+from src.services.analyzer import analyze_text
+from src.services.charts import make_chart
+from src.services.database import get_recent_analyses, get_user_stats, save_analysis
 
 router = Router()
 
-TEXT_POMOSCHI = (
-    "Я разбираю русский учебный текст.\n\n"
-    "Могу посчитать слова и предложения, показать частотные леммы, найти сущности и сохранить результат в историю.\n\n"
-    "Нажми «Разобрать текст», потом просто пришли кусок текста длиной хотя бы 30 символов."
+MIN_LENGTH = 30
+
+HELP_TEXT = (
+    'Я разбираю русский учебный текст.\n\n'
+    'Могу посчитать слова и предложения, показать частотные леммы, '
+    'найти людей, места и организации, построить график и сохранить результат в историю.\n\n'
+    f'Нажми «Разобрать текст» и пришли фрагмент длиной хотя бы {MIN_LENGTH} символов. '
+    'Длинные тексты Telegram режет на несколько сообщений, и я разберу каждое отдельно, '
+    'поэтому лучше присылать до 4000 символов.'
 )
 
 
-def setup_handlers(database: BazaDannyh, analyzer: AnalizatorTeksta) -> Router:
-    zhdu_tekst_ot: set[int] = set()
+def format_result(result: dict) -> str:
+    """Собирает текст отчёта из результата анализа."""
+    lemmas = []
+    for lemma, count in result['top_lemmas']:
+        lemmas.append(f'{lemma} ({count})')
+    lemmas_text = ', '.join(lemmas)
+    if lemmas_text == '':
+        lemmas_text = 'нет данных'
 
-    async def pokazat_menu(message: Message, text: str | None = None) -> None:
-        privet = (
-            text
-            or "Привет. Это бот, который разбирает русский учебный текст. Выбери, что тебе нужно."
-        )
-        await message.answer(privet, reply_markup=glavnoe_menu())
-
-    async def obnovit_soobshenie(callback: CallbackQuery, text: str, *, markup) -> None:
-        if not callback.message:
-            await callback.answer()
-            return
-
-        try:
-            await callback.message.edit_text(text, reply_markup=markup)
-        except TelegramBadRequest:
-            await callback.message.answer(text, reply_markup=markup)
-        await callback.answer()
-
-    @router.callback_query(F.data == "menu:home")
-    async def menu_home(callback: CallbackQuery) -> None:
-        await obnovit_soobshenie(
-            callback,
-            "Вот меню. Можешь выбрать нужный раздел.",
-            markup=glavnoe_menu(),
-        )
-
-    @router.callback_query(F.data == "menu:help")
-    async def menu_help(callback: CallbackQuery) -> None:
-        await obnovit_soobshenie(callback, TEXT_POMOSCHI, markup=knopka_nazad())
-
-    @router.callback_query(F.data == "menu:analiz")
-    async def menu_analiz(callback: CallbackQuery) -> None:
-        if callback.from_user:
-            zhdu_tekst_ot.add(callback.from_user.id)
-        await obnovit_soobshenie(
-            callback,
-            "Пришли учебный текст одним сообщением, я его разберу.",
-            markup=knopka_nazad(),
-        )
-
-    @router.callback_query(F.data == "menu:history")
-    async def menu_history(callback: CallbackQuery) -> None:
-        if not callback.from_user:
-            await callback.answer()
-            return
-
-        analizy = database.get_recent_analyses(callback.from_user.id)
-        if not analizy:
-            text = "История пока пустая. Сначала разберите хотя бы один текст."
-        else:
-            stroki: list[str] = ["Последние анализы:"]
-            for nomer, item in enumerate(analizy, start=1):
-                lemmmy = ", ".join(lemma for lemma, _ in item["top_lemmas"][:3]) or "нет"
-                stroki.append(
-                    f"{nomer}) {item['created_at']} | слов {item['word_count']} | "
-                    f"предложений {item['sentence_count']} | леммы {lemmmy}"
-                )
-            text = "\n".join(stroki)
-
-        await obnovit_soobshenie(callback, text, markup=knopki_posle_razdela())
-
-    @router.callback_query(F.data == "menu:stats")
-    async def menu_stats(callback: CallbackQuery) -> None:
-        if not callback.from_user:
-            await callback.answer()
-            return
-
-        stats = database.get_user_stats(callback.from_user.id)
-        await obnovit_soobshenie(
-            callback,
-            "Твоя статистика:\n"
-            f"Анализов всего: {stats['total_analyses']}\n"
-            f"Средний размер текста: {stats['avg_word_count']} слов",
-            markup=knopki_posle_razdela(),
-        )
-
-    @router.message(F.text)
-    async def vse_soobsheniya(message: Message) -> None:
-        if not message.from_user or not message.text:
-            return
-
-        user_id = message.from_user.id
-        text = message.text.strip()
-
-        if text.startswith("/"):
-            await pokazat_menu(
-                message,
-                "Тут все через кнопки, так что просто выбери действие в меню.",
-            )
-            return
-
-        nado_analizirovat = user_id in zhdu_tekst_ot or len(text) >= 30
-
-        if not nado_analizirovat:
-            await message.answer(
-                "Текст слишком короткий. Пришли хотя бы 30 символов.",
-                reply_markup=knopka_nazad(),
-            )
-            return
-
-        zhdu_tekst_ot.discard(user_id)
-        wait_message = await message.answer("Секунду, смотрю текст...")
-        result = analyzer.analiz(text)
-        database.save_analysis(
-            user_id=user_id,
-            username=message.from_user.username,
-            result=result,
-        )
-
-        await wait_message.delete()
-        await message.answer(format_rezultat(result), reply_markup=knopki_posle_analiza())
-
-        chart = postroit_grafik(result)
-        image = BufferedInputFile(chart.getvalue(), filename="analysis.png")
-        await message.answer_photo(image, caption="Вот график по тексту", reply_markup=knopki_posle_analiza())
-
-    return router
-
-
-def format_rezultat(result: RezultatAnaliza) -> str:
-    lemmas = ", ".join(f"{lemma} ({count})" for lemma, count in result.top_lemmas[:10]) or "нет данных"
-    entities = format_sushchnosti(result)
+    if len(result['entities']) == 0:
+        entities_text = 'не найдены'
+    else:
+        parts = []
+        for name, values in result['entities'].items():
+            parts.append(f'{name}: ' + ', '.join(values[:5]))
+        entities_text = '; '.join(parts)
 
     return (
-        "Готово, вот что получилось.\n"
-        f"Слов: {result.word_count}\n"
-        f"Предложений: {result.sentence_count}\n"
-        f"Частотные леммы: {lemmas}\n"
-        f"Сущности: {entities}"
+        'Готово, вот что получилось.\n'
+        f'Слов: {result["word_count"]}\n'
+        f'Предложений: {result["sentence_count"]}\n'
+        f'Частотные леммы: {lemmas_text}\n'
+        f'Сущности: {entities_text}'
     )
 
 
-def format_sushchnosti(result: RezultatAnaliza) -> str:
-    if not result.entities:
-        return "не найдены"
+@router.message(CommandStart())
+async def start(message: Message):
+    await message.answer(
+        'Привет! Это бот, который разбирает русский учебный текст. Выбери, что тебе нужно.',
+        reply_markup=main_menu(),
+    )
 
-    chunks: list[str] = []
-    grouped: dict[str, list[str]] = {}
-    for item in result.entities:
-        grouped.setdefault(item.label, []).append(item.value)
 
-    for label, values in grouped.items():
-        unique_values = ", ".join(values[:4])
-        suffix = "..." if len(values) > 4 else ""
-        chunks.append(f"{label}: {unique_values}{suffix}")
-    return "; ".join(chunks)
+@router.callback_query(F.data == 'menu:home')
+async def show_menu(callback: CallbackQuery):
+    await callback.message.answer('Вот меню.', reply_markup=main_menu())
+    await callback.answer()
+
+
+@router.callback_query(F.data == 'menu:help')
+async def show_help(callback: CallbackQuery):
+    await callback.message.answer(HELP_TEXT, reply_markup=back_button())
+    await callback.answer()
+
+
+@router.callback_query(F.data == 'menu:analyze')
+async def ask_for_text(callback: CallbackQuery):
+    await callback.message.answer(
+        'Пришли учебный текст одним сообщением, я его разберу.',
+        reply_markup=back_button(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == 'menu:history')
+async def show_history(callback: CallbackQuery):
+    rows = get_recent_analyses(callback.from_user.id)
+    if len(rows) == 0:
+        text = 'История пока пустая. Сначала разбери хотя бы один текст.'
+    else:
+        text = 'Последние анализы:\n'
+        number = 1
+        for created_at, word_count, sentence_count, lemmas in rows:
+            top3 = ', '.join(lemmas.split(', ')[:3])
+            if top3 == '':
+                top3 = 'нет'
+            text += f'{number}) {created_at} (UTC) | слов: {word_count} | предложений: {sentence_count} | леммы: {top3}\n'
+            number += 1
+    await callback.message.answer(text, reply_markup=after_section_buttons())
+    await callback.answer()
+
+
+@router.callback_query(F.data == 'menu:stats')
+async def show_stats(callback: CallbackQuery):
+    total, average = get_user_stats(callback.from_user.id)
+    text = f'Твоя статистика:\nАнализов всего: {total}\nСредний размер текста: {average} слов'
+    await callback.message.answer(text, reply_markup=after_section_buttons())
+    await callback.answer()
+
+
+@router.message(F.text)
+async def handle_text(message: Message):
+    text = message.text.strip()
+
+    # неизвестные команды
+    if text.startswith('/'):
+        await message.answer('Такой команды я не знаю, выбери действие в меню.', reply_markup=main_menu())
+        return
+
+    if len(text) < MIN_LENGTH:
+        await message.answer(
+            f'Текст слишком короткий, пришли хотя бы {MIN_LENGTH} символов.',
+            reply_markup=back_button(),
+        )
+        return
+
+    wait_message = await message.answer('Секунду, смотрю текст...')
+
+    try:
+        result = analyze_text(text)
+    except Exception:
+        await wait_message.edit_text('Не получилось разобрать этот текст. Попробуй прислать другой.')
+        return
+
+    save_analysis(message.from_user.id, result)
+    await wait_message.delete()
+
+    # если лемм нет (например, в тексте одни цифры), графика не будет
+    if len(result['top_lemmas']) == 0:
+        await message.answer(format_result(result), reply_markup=after_analysis_buttons())
+        return
+
+    await message.answer(format_result(result))
+
+    filename = f'data/chart_{message.from_user.id}.png'
+    make_chart(result, filename)
+    await message.answer_photo(
+        FSInputFile(filename),
+        caption='График по тексту',
+        reply_markup=after_analysis_buttons(),
+    )
+    os.remove(filename)

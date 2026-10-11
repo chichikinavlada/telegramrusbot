@@ -1,36 +1,25 @@
-from __future__ import annotations
-
-from io import BytesIO
+"""График по результатам анализа."""
 
 import matplotlib
-
-matplotlib.use("Agg")
+matplotlib.use('Agg')  # режим без окна, чтобы график можно было сохранить на сервере
 import matplotlib.pyplot as plt
 
-from src.services.analyzer import RezultatAnaliza
 
+def make_chart(result: dict, filename: str) -> None:
+    """Рисует столбчатую диаграмму самых частотных лемм и сохраняет её в файл."""
+    lemmas = []
+    counts = []
+    for lemma, count in result['top_lemmas']:
+        lemmas.append(lemma)
+        counts.append(count)
 
-def postroit_grafik(result: RezultatAnaliza) -> BytesIO:
-    figure, axes = plt.subplots(1, 2, figsize=(12, 4))
-    figure.suptitle("Статистика текста", fontsize=14)
+    # barh рисует снизу вверх, поэтому разворачиваем списки, чтобы самая частотная лемма была сверху
+    lemmas.reverse()
+    counts.reverse()
 
-    lemma_labels = [lemma for lemma, _ in result.top_lemmas[:5]] or ["нет данных"]
-    lemma_values = [count for _, count in result.top_lemmas[:5]] or [0]
-    axes[0].bar(lemma_labels, lemma_values, color="#4F81BD")
-    axes[0].set_title("Топ лемм")
-    axes[0].tick_params(axis="x", rotation=25)
-
-    entity_counts = result.entity_counts
-    entity_labels = list(entity_counts.keys()) or ["нет сущностей"]
-    entity_values = list(entity_counts.values()) or [0]
-    axes[1].bar(entity_labels, entity_values, color="#C0504D")
-    axes[1].set_title("Сущности")
-    axes[1].tick_params(axis="x", rotation=20)
-
-    figure.tight_layout()
-
-    buffer = BytesIO()
-    figure.savefig(buffer, format="png", dpi=150, bbox_inches="tight")
-    buffer.seek(0)
-    plt.close(figure)
-    return buffer
+    plt.figure(figsize=(8, 5))
+    plt.barh(lemmas, counts, color='purple')
+    plt.title('Самые частотные леммы')
+    plt.xlabel('Сколько раз встретилась')
+    plt.savefig(filename, bbox_inches='tight')
+    plt.close()
