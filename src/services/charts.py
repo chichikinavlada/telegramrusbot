@@ -6,14 +6,14 @@ import matplotlib.pyplot as plt
 
 
 def make_chart(result: dict, filename: str) -> None:
-    """Рисует столбчатую диаграмму самых частотных лемм и сохраняет её в файл."""
+    """Рисует столбчатую диаграмму самых частотных лемм и сохраняет её в файл"""
     lemmas = []
     counts = []
     for lemma, count in result['top_lemmas']:
         lemmas.append(lemma)
         counts.append(count)
 
-    # barh рисует снизу вверх, поэтому разворачиваем списки, чтобы самая частотная лемма была сверху
+    #  разворачиваем списки, чтобы самая частотная лемма была сверху
     lemmas.reverse()
     counts.reverse()
 
