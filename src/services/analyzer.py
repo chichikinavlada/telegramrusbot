@@ -7,19 +7,19 @@ from nltk.tokenize import sent_tokenize, wordpunct_tokenize
 from natasha import Doc, MorphVocab, NewsEmbedding, NewsNERTagger, Segmenter
 from pymorphy3 import MorphAnalyzer
 
-# данные для nltk (если они уже скачаны, повторно ничего не скачается)
+# данные для nltk 
 nltk.download('punkt_tab', quiet=True)
 nltk.download('stopwords', quiet=True)
 
-# модели загружаем один раз при запуске бота, потому что это долго
+# модели загружаем при запуске бота
 morph = MorphAnalyzer()
 segmenter = Segmenter()
 morph_vocab = MorphVocab()
 emb = NewsEmbedding()
 ner_tagger = NewsNERTagger(emb)
 
-# стоп-слова: список из nltk и слова, которые добавляли на семинаре по визуализации
-# (плюс "являться", которое часто встречается в учебных текстах)
+# стоп-слова
+
 stops = set(stopwords.words('russian') + ['это', 'весь', 'который', 'мочь', 'свой', 'являться'])
 
 # уже разобранные слова, чтобы не вызывать pymorphy много раз для одного слова
@@ -83,7 +83,7 @@ def analyze_text(text: str) -> dict:
     words = get_words(text)
     lemmas = get_lemmas(words)
 
-    # таблица частотности лемм, как в домашке по морфологии
+    # таблица частотности лемм
     freq = pd.Series(lemmas, dtype='object').value_counts()
     top_lemmas = []
     for lemma, count in freq.head(10).items():
