@@ -1,4 +1,4 @@
-"""Работа с базой данных SQLite: сохраняем историю анализов."""
+"""Работа с базой данных SQLite, сохраняем историю анализов"""
 
 import os
 import sqlite3
@@ -7,7 +7,7 @@ from src.config import DB_PATH
 
 
 def create_table() -> None:
-    """Создаёт таблицу text_analyses, если её ещё нет."""
+    """Создаёт таблицу text_analyses, если её ещё нет"""
     os.makedirs('data', exist_ok=True)
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
@@ -26,7 +26,7 @@ def create_table() -> None:
 
 
 def save_analysis(user_id: int, result: dict) -> None:
-    """Сохраняет результат анализа. Леммы записываем в одну строку через запятую."""
+    """Сохраняет результат анализа. Леммы записываем в одну строку через запятую"""
     lemmas = []
     for lemma, count in result['top_lemmas']:
         lemmas.append(lemma)
@@ -43,7 +43,7 @@ def save_analysis(user_id: int, result: dict) -> None:
 
 
 def get_recent_analyses(user_id: int, limit: int = 5) -> list:
-    """Возвращает последние анализы пользователя (сначала самые новые)."""
+    """Возвращает последние анализы пользователя"""
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
     cur.execute(
@@ -57,7 +57,7 @@ def get_recent_analyses(user_id: int, limit: int = 5) -> list:
 
 
 def get_user_stats(user_id: int) -> tuple:
-    """Возвращает количество анализов пользователя и среднее число слов в тексте."""
+    """Возвращает количество анализов пользователя и среднее число слов в тексте"""
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
     cur.execute(
